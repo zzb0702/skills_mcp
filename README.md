@@ -19,6 +19,24 @@ cd gaal-studio
 start.bat        :: 启动并自动打开浏览器（或 npm start，默认 http://127.0.0.1:7788）
 ```
 
+## 截图
+
+**总览** — 资源统计与各 agent 的 skill 分布
+
+![总览](docs/screenshots/overview.png)
+
+**Skills 清单** — 搜索过滤、批量部署/启用/禁用
+
+![Skills 清单](docs/screenshots/skills.png)
+
+**MCP Servers** — 跨 agent 的 MCP 配置解析、重复定义检测
+
+![MCP Servers](docs/screenshots/mcps.png)
+
+**项目级部署** — 本机 skill 按名称去重浏览（悬停查看装了哪些 agent）、按 agent 筛选、当前项目内资源一键写入声明
+
+![项目级部署](docs/screenshots/deploy.png)
+
 功能详情、环境变量、安全模型与开发说明见 [gaal-studio/README.md](gaal-studio/README.md)。
 
 ## 开发
