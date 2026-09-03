@@ -602,41 +602,7 @@ views.skills = async () => {
     });
 
     $$('#sk-area [data-deploy]').forEach((btn) => {
-      btn.onclick = () => {
-        openModal(
-          `<h2>部署 skill 到项目级</h2>
-           <p class="muted">写入当前项目的 <span class="mono">gaal.yaml</span>，并设置 <span class="mono">global: false</span>。</p>
-           <label class="field"><span>Skill 名称</span><input type="text" value="${esc(btn.dataset.deploy)}" readonly /></label>
-           <label class="field"><span>source（gaal.yaml 中记录的来源）</span><input type="text" id="dp-source" value="${esc(btn.dataset.path)}" /></label>
-           <label class="field"><span>目标 agents（逗号分隔，* 表示全部）</span><input type="text" id="dp-agents" value="*" /></label>
-           <div class="modal-actions">
-             <button class="ghost" onclick="closeModal()">取消</button>
-             <button class="primary" id="dp-ok">写入配置</button>
-           </div>`,
-          (root) => {
-            $('#dp-ok', root).onclick = async () => {
-              const source = $('#dp-source', root).value.trim();
-              const ags = $('#dp-agents', root).value.split(',').map((x) => x.trim()).filter(Boolean);
-              try {
-                // 部署前先算 diff，让用户确认 gaal.yaml 将发生的变化
-                const pv = await api('/api/preview/skill', { method: 'POST', body: { source, agents: ags } });
-                const ok = await confirmDialog({
-                  title: pv.replaced ? '更新部署声明' : '部署 skill 到项目级',
-                  message: `将把该 skill ${pv.replaced ? '原位更新到' : '写入'}当前项目的 gaal.yaml：`,
-                  diff: pv.diff,
-                  confirmText: '确认写入',
-                });
-                if (!ok) return;
-                await api('/api/deploy/skill', { method: 'POST', body: { source, agents: ags } });
-                closeModal();
-                await afterDeploy(1, ' skill');
-              } catch (e) {
-                toast(e.message, 'err');
-              }
-            };
-          },
-        );
-      };
+      btn.onclick = () => skillDeployModal({ name: btn.dataset.deploy, path: btn.dataset.path });
     });
   };
 
@@ -1014,6 +980,43 @@ function mcpForm(preset) {
 
 /* ───────────── 项目级部署 ───────────── */
 
+/** 部署 skill 到项目级的弹窗（Skills 页与「项目级部署」页共用），含 diff 预览确认 */
+function skillDeployModal(s) {
+  openModal(
+    `<h2>部署 skill 到项目级</h2>
+     <p class="muted">写入当前项目的 <span class="mono">gaal.yaml</span>，并设置 <span class="mono">global: false</span>。</p>
+     <label class="field"><span>Skill 名称</span><input type="text" value="${esc(s.name)}" readonly /></label>
+     <label class="field"><span>source（gaal.yaml 中记录的来源）</span><input type="text" id="dp-source" value="${esc(s.path)}" /></label>
+     <label class="field"><span>目标 agents（逗号分隔，* 表示全部）</span><input type="text" id="dp-agents" value="*" /></label>
+     <div class="modal-actions">
+       <button class="ghost" onclick="closeModal()">取消</button>
+       <button class="primary" id="dp-ok">写入配置</button>
+     </div>`,
+    (root) => {
+      $('#dp-ok', root).onclick = async () => {
+        const source = $('#dp-source', root).value.trim();
+        const ags = $('#dp-agents', root).value.split(',').map((x) => x.trim()).filter(Boolean);
+        try {
+          // 部署前先算 diff，让用户确认 gaal.yaml 将发生的变化
+          const pv = await api('/api/preview/skill', { method: 'POST', body: { source, agents: ags } });
+          const ok = await confirmDialog({
+            title: pv.replaced ? '更新部署声明' : '部署 skill 到项目级',
+            message: `将把该 skill ${pv.replaced ? '原位更新到' : '写入'}当前项目的 gaal.yaml：`,
+            diff: pv.diff,
+            confirmText: '确认写入',
+          });
+          if (!ok) return;
+          await api('/api/deploy/skill', { method: 'POST', body: { source, agents: ags } });
+          closeModal();
+          await afterDeploy(1, ' skill');
+        } catch (e) {
+          toast(e.message, 'err');
+        }
+      };
+    },
+  );
+}
+
 views.deploy = async () => {
   const skills = cache.audit?.skills || [];
   const agents = cache.agents.filter((a) => a.installed).map((a) => a.name);
@@ -1025,6 +1028,42 @@ views.deploy = async () => {
   const declaredBase = new Set(declaredSkillList.filter((s) => !isAbsPath(s.source)).map((s) => basename(s.source)));
   const declaredMcps = new Set((declared.mcps || []).map((m) => m.name));
 
+  // 当前项目目录内实际存在的资源：skills 按路径位于项目目录下识别，MCP 取 project 作用域
+  const projDir = cache.meta?.projectDir || '';
+  const projNorm = projDir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const projSkills = skills.filter((s) => projNorm && (s.path || '').replace(/\\/g, '/').toLowerCase().startsWith(`${projNorm}/`));
+  const projMcps = (cache.mcps || []).filter((m) => m.scope === 'project');
+  const skillDeclared = (s) => declaredSkills.has(s.path) || declaredBase.has(basename(s.path));
+
+  const projSkillRow = (s) => {
+    const off = s.enabled === false;
+    const done = skillDeclared(s);
+    return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="mono"><strong>${esc(s.name)}</strong></span>
+        <span class="tag blue">${esc(s.agent)}</span>
+        ${off ? '<span class="tag err">已禁用</span>' : ''}
+        ${done ? '<span class="tag green">已声明</span>' : ''}
+        <span style="flex:1"></span>
+        ${!off && !done ? `<button class="small" data-pj-deploy="${esc(s.name)}" data-pj-path="${esc(s.path)}">写入声明</button>` : ''}
+      </div>
+      <div class="mono muted" style="font-size:10px;word-break:break-all;margin-top:2px">${esc(s.path)}</div>
+    </div>`;
+  };
+  const projMcpRow = (m, i) => {
+    const done = declaredMcps.has(m.name);
+    return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="mono"><strong>${esc(m.name)}</strong></span>
+        <span class="tag blue">${esc(m.agent)}</span>
+        ${done ? '<span class="tag green">已声明</span>' : ''}
+        <span style="flex:1"></span>
+        ${done ? '' : `<button class="small" data-pj-mcp="${i}">写入声明</button>`}
+      </div>
+      <div class="mono muted" style="font-size:10px;word-break:break-all;margin-top:2px">${esc(basename(m.file))} · ${esc(m.command || m.url || '')}</div>
+    </div>`;
+  };
+
   $('#content').innerHTML = `
     <div class="split">
       <div class="card">
@@ -1032,6 +1071,7 @@ views.deploy = async () => {
         <p class="muted" style="margin-top:0">勾选后点击"部署到项目"，会写入当前项目的 <span class="mono">gaal.yaml</span>（<span class="mono">global: false</span>），然后执行同步即可生效。</p>
         <div class="toolbar">
           <input type="text" id="dp-search" placeholder="搜索 skill…" />
+          <select id="dp-agent" style="width:auto"></select>
           <span class="spacer"></span>
           <span class="muted" id="dp-sel-count">已选 0</span>
         </div>
@@ -1064,7 +1104,30 @@ views.deploy = async () => {
     </div>
 
     <div class="card" style="margin-top:14px">
-      <h3>当前项目已声明的资源</h3>
+      <h3>
+        当前项目内的资源
+        <span class="tag blue" title="${esc(projDir)}">${esc(basename(projDir) || projDir || '—')}</span>
+        <span class="muted" style="font-size:11px;font-weight:400">按项目目录下的路径 / project 作用域识别</span>
+      </h3>
+      <div class="split">
+        <div>
+          <div class="muted" style="margin-bottom:6px">项目内 Skills (${projSkills.length})</div>
+          ${projSkills.length ? projSkills.map(projSkillRow).join('') : '<div class="empty" style="padding:14px">项目目录下未发现 skills</div>'}
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:6px">项目内 MCP (${projMcps.length})</div>
+          ${projMcps.length ? projMcps.map(projMcpRow).join('') : '<div class="empty" style="padding:14px">项目内未发现 project 级 MCP 配置</div>'}
+        </div>
+      </div>
+      ${
+        !projSkills.length && !projMcps.length
+          ? '<p class="muted" style="font-size:12px;margin-bottom:0">刚切换了项目？点右上角「刷新」重新扫描。项目内 skills 需位于项目的 skills 目录（如 .claude/skills、.zcode/skills 等）下才会被识别。</p>'
+          : ''
+      }
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>当前项目 gaal.yaml 已声明的资源</h3>
       ${
         declaredSkills.size || declaredMcps.size
           ? `<div class="split">
@@ -1088,36 +1151,61 @@ views.deploy = async () => {
     </div>
   `;
 
-  const groups = {};
-  for (const s of skills) (groups[s.agent] ||= []).push(s);
+  // 按 skill 名称去重：同一 skill 装在多个 agent 目录下时路径各不相同，
+  // 按路径去重挡不住这种重复，故按名称（+作用域）合并，agent 收进标签
+  const byName = new Map();
+  for (const s of skills) {
+    const key = `${(s.name || '').toLowerCase()}::${s.source === 'project' ? 'project' : 'global'}`;
+    const g = byName.get(key);
+    if (g) {
+      if (!g.agents.includes(s.agent)) g.agents.push(s.agent);
+      if (!g.paths.includes(s.path)) g.paths.push(s.path);
+      if (!g.desc && s.desc) g.desc = s.desc;
+    } else {
+      byName.set(key, { ...s, agents: [s.agent], paths: [s.path] });
+    }
+  }
+  const uniq = [...byName.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  $('#dp-agent').innerHTML =
+    '<option value="">全部 agent</option>' +
+    [...new Set(skills.map((s) => s.agent))].sort().map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
 
   const renderList = () => {
     const kw = $('#dp-search').value.trim().toLowerCase();
-    let html = '';
-    for (const [ag, list] of Object.entries(groups)) {
-      const filtered = list.filter(
-        (s) => !kw || (s.name || '').toLowerCase().includes(kw) || (s.desc || '').toLowerCase().includes(kw),
-      );
-      if (!filtered.length) continue;
-      html += `<div style="padding:8px 12px;background:var(--bg-elev);font-size:12px;color:var(--text-dim);position:sticky;top:0">${esc(ag)} · ${filtered.length}</div>`;
-      for (const s of filtered) {
-        const done = declaredSkills.has(s.path) || declaredBase.has(basename(s.path));
-        html += `<label style="display:flex;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border);cursor:pointer;align-items:flex-start">
+    const ag = $('#dp-agent').value;
+    const filtered = uniq.filter(
+      (s) =>
+        (!ag || s.agents.includes(ag)) &&
+        (!kw || (s.name || '').toLowerCase().includes(kw) || (s.desc || '').toLowerCase().includes(kw)),
+    );
+    const html = filtered
+      .map((s) => {
+        const done = s.paths.some((p) => declaredSkills.has(p)) || declaredBase.has(basename(s.path));
+        const badge =
+          s.agents.length > 2
+            ? `<span class="tag" title="${esc(s.agents.join(', '))}">${s.agents.length} 个 agent</span>`
+            : s.agents.map((x) => `<span class="tag">${esc(x)}</span>`).join('');
+        return `<label style="display:flex;gap:10px;padding:7px 12px;border-bottom:1px solid var(--border);cursor:pointer;align-items:flex-start">
           <input type="checkbox" value="${esc(s.path)}" data-name="${esc(s.name)}" style="width:auto;margin-top:3px" ${done ? 'disabled' : ''} />
-          <div style="min-width:0">
-            <div class="mono">${esc(s.name)} ${done ? '<span class="tag green">已声明</span>' : ''}</div>
+          <div style="min-width:0;flex:1">
+            <div class="mono" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${esc(s.name)}
+              ${s.source === 'project' ? '<span class="tag blue">项目</span>' : ''}
+              ${done ? '<span class="tag green">已声明</span>' : ''}
+              ${badge}
+            </div>
             <div class="desc muted" style="font-size:11px">${esc((s.desc || '').slice(0, 120))}</div>
           </div>
         </label>`;
-      }
-    }
+      })
+      .join('');
     $('#dp-list').innerHTML = html || '<div class="empty">无匹配</div>';
     updateCount();
   };
   const updateCount = () => {
-    $('#dp-sel-count').textContent = `已选 ${$$('#dp-list input:checked').length}`;
+    $('#dp-sel-count').textContent = `已选 ${$$('#dp-list input:checked').length} / 共 ${uniq.length}`;
   };
   $('#dp-search').oninput = renderList;
+  $('#dp-agent').onchange = renderList;
   $('#dp-list').onchange = updateCount;
   $('#dp-all').onclick = () => {
     $$('#dp-list input:not(:disabled)').forEach((i) => (i.checked = true));
@@ -1199,6 +1287,13 @@ views.deploy = async () => {
       out.textContent = `失败：${e.message}`;
     }
   };
+
+  $$('[data-pj-deploy]').forEach((btn) => {
+    btn.onclick = () => skillDeployModal({ name: btn.dataset.pjDeploy, path: btn.dataset.pjPath });
+  });
+  $$('[data-pj-mcp]').forEach((btn) => {
+    btn.onclick = () => mcpForm(projMcps[Number(btn.dataset.pjMcp)]);
+  });
 
   $$('[data-rm-skill]').forEach((b) => {
     b.onclick = async () => {
