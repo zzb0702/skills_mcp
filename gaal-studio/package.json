@@ -1,0 +1,23 @@
+{
+  "name": "gaal-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "gaal 的可视化面板：查看各 agent 的 skills/MCP，管理并部署项目级配置",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test",
+    "check": "node scripts/check.js && npm test"
+  },
+  "bin": {
+    "gaal-studio": "server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "js-yaml": "^4.1.0"
+  }
+}

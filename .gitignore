@@ -1,0 +1,11 @@
+# 依赖
+node_modules/
+
+# gaal-studio 运行时状态（最近项目、定时同步开关等）
+gaal-studio/studio.json
+
+# 本机专属的 gaal 项目配置（含本地盘符路径）
+gaal-studio/gaal.yaml
+
+# 日志
+*.log

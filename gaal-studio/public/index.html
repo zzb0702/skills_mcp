@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>gaal studio</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#9650;</text></svg>" />
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<div id="layout">
+  <aside id="sidebar">
+    <div class="brand">
+      <span class="logo">▲</span>
+      <div>
+        <div class="brand-name">gaal studio</div>
+        <div class="brand-sub" id="meta-version">…</div>
+      </div>
+    </div>
+
+    <nav id="nav">
+      <button data-view="overview" class="active">总览</button>
+      <button data-view="agents">Agents</button>
+      <button data-view="skills">Skills</button>
+      <button data-view="mcps">MCP Servers</button>
+      <button data-view="deploy">项目级部署</button>
+      <button data-view="config">配置编辑</button>
+      <button data-view="sync">同步</button>
+    </nav>
+
+    <div class="project-box">
+      <div class="label">当前项目</div>
+      <div class="project-path" id="project-path" title="">—</div>
+      <button id="btn-change-project" class="ghost small">切换项目</button>
+    </div>
+
+    <div class="footer">
+      <a href="https://github.com/getgaal/gaal" target="_blank">gaal 项目主页</a>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="topbar">
+      <h1 id="view-title">总览</h1>
+      <div class="topbar-actions">
+        <button id="stale-pill" class="badge stale hidden" title="其他窗口或定时任务更新了数据，点击刷新">⟳ 数据有更新 · 刷新</button>
+        <span id="schedule-badge" class="badge" title="定时同步状态">定时: 关</span>
+        <button id="btn-quick-sync" class="primary" title="对当前项目执行 gaal sync">⟳ 一键同步</button>
+        <button id="btn-refresh" class="ghost">刷新</button>
+      </div>
+    </header>
+    <section id="content"><div class="loading">加载中…</div></section>
+  </main>
+</div>
+
+<div id="modal-root" class="hidden"></div>
+<div id="toast-root"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
