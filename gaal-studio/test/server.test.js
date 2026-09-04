@@ -60,6 +60,13 @@ test('GET / 返回面板页面', async () => {
   assert.match(r.headers['content-type'] || '', /text\/html/);
 });
 
+test('app.css 提供 .hidden 工具类（stale pill 与批量操作条靠它隐藏）', async () => {
+  const r = await req('GET', '/app.css');
+  assert.equal(r.status, 200);
+  // #stale-pill / .bulk-bar 各自声明了 display，工具类必须带 !important 才压得住
+  assert.match(r.body, /\.hidden\s*\{[^}]*display:\s*none\s*!important/);
+});
+
 test('未知 API 路由返回 404 与错误说明', async () => {
   const r = await req('GET', '/api/no-such-route');
   assert.equal(r.status, 404);

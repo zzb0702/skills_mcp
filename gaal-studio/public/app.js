@@ -180,25 +180,54 @@ const cache = {
   config: null,
 };
 
-async function loadBase() {
-  const [meta, agents, audit, mcps] = await Promise.all([
-    api('/api/meta'),
-    api('/api/agents'),
-    api('/api/audit'),
-    api('/api/mcps').catch(() => ({ mcps: [] })),
-  ]);
-  cache.meta = meta;
-  cache.agents = agents.agents || [];
-  cache.audit = audit;
-  cache.mcps = mcps.mcps || [];
-  $('#meta-version').textContent = `gaal ${typeof meta.version === 'string' ? meta.version : meta.version?.version || ''}`;
-  if (meta.compat && meta.compat.ok === false) {
-    toast(`gaal ${$('#meta-version').textContent.slice(5)} 低于面板验证过的最低版本 ${meta.compat.min}，部分字段可能显示异常`, 'err');
-  }
-  $('#project-path').textContent = meta.projectDir;
-  $('#project-path').title = meta.projectDir;
-  refreshScheduleBadge();
-  noteStateBaseline();
+/**
+ * 拉取基础数据（meta / agents / audit / mcps）。
+ *
+ * - 单路容错：agents / audit / mcps 任一路失败时保留上一次的缓存并提示，
+ *   不再让 Promise.all 整体 reject（那种情况下侧栏路径与内容会一直停在旧项目，只能手动刷新）。
+ * - 单飞 + 新鲜期：一次加载要 2~4 秒（后端要 spawn gaal），期间与刚结束的重复调用直接复用，
+ *   避免「loadBase() 后紧接 show() 触发第二次全量拉取」。
+ *
+ * @param {{force?: boolean}} [opts] force 忽略新鲜期，用于顶栏「刷新」按钮
+ */
+const BASE_FRESH_MS = 5000;
+let baseLoad = { startedAt: 0, promise: null };
+
+function loadBase(opts = {}) {
+  const now = Date.now();
+  if (!opts.force && baseLoad.promise && now - baseLoad.startedAt < BASE_FRESH_MS) return baseLoad.promise;
+  const p = (async () => {
+    const [meta, agents, audit, mcps] = await Promise.all([
+      api('/api/meta').catch((e) => ({ __err: e.message })),
+      api('/api/agents').catch((e) => ({ __err: e.message })),
+      api('/api/audit').catch((e) => ({ __err: e.message })),
+      api('/api/mcps').catch((e) => ({ __err: e.message })),
+    ]);
+    if (meta.__err) throw new Error('无法读取面板信息：' + meta.__err);
+    const failed = [];
+    cache.meta = meta;
+    if (agents.__err) failed.push('Agents');
+    else cache.agents = agents.agents || [];
+    if (audit.__err) failed.push('Skills 清单');
+    else cache.audit = audit;
+    if (mcps.__err) failed.push('MCP');
+    else cache.mcps = mcps.mcps || [];
+    if (failed.length) toast(`部分数据未刷新（${failed.join('、')}），仍是上一次的结果`, 'err');
+    $('#meta-version').textContent = `gaal ${typeof meta.version === 'string' ? meta.version : meta.version?.version || ''}`;
+    if (meta.compat && meta.compat.ok === false) {
+      toast(`gaal ${$('#meta-version').textContent.slice(5)} 低于面板验证过的最低版本 ${meta.compat.min}，部分字段可能显示异常`, 'err');
+    }
+    $('#project-path').textContent = meta.projectDir;
+    $('#project-path').title = meta.projectDir;
+    refreshScheduleBadge();
+    noteStateBaseline();
+    return { failed };
+  })();
+  baseLoad = { startedAt: now, promise: p };
+  p.catch(() => {
+    if (baseLoad.promise === p) baseLoad = { startedAt: 0, promise: null };
+  });
+  return p;
 }
 
 /* ── 数据更新检测：轮询 /api/state 签名，变化时提示刷新（不自动刷新，避免打断编辑） ── */
@@ -260,9 +289,15 @@ async function show(view) {
   $('#view-title').textContent = titles[view] || view;
   $('#content').innerHTML = '<div class="loading">加载中…</div>';
   try {
+    // 缓存不可信时（切换项目会清空 cache.audit，或首次加载）先等一轮基础刷新；
+    // 其余情况直接复用缓存，视图切换保持瞬时 —— 写入类操作各自带 loadBase({ force: true })
+    if (!cache.meta || !cache.audit) await loadBase();
     await views[view]();
   } catch (e) {
-    $('#content').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+    const hint = /无法读取面板信息/.test(e.message)
+      ? '<br /><br />请确认 gaal 已安装，或设置环境变量 <span class="mono">GAAL_BIN</span> 指向可执行文件。'
+      : '';
+    $('#content').innerHTML = `<div class="empty">加载失败：${esc(e.message)}${hint}</div>`;
   }
 }
 
@@ -337,7 +372,7 @@ views.overview = async () => {
         <button id="ov-doctor">健康检查</button>
         <button class="ghost" id="ov-goto-deploy">部署到项目 →</button>
       </div>
-      <pre class="output hidden" id="ov-out" style="display:none"></pre>
+      <pre class="output" id="ov-out" style="display:none"></pre>
     </div>
   `;
 
@@ -352,6 +387,8 @@ views.overview = async () => {
       });
       out.textContent += `\nexit=${r?.code ?? '?'}`;
       toast(r?.ok ? '完成' : `退出码 ${r?.code}`, r?.ok ? 'ok' : 'err');
+      // 自己刚同步过：刷新缓存并重记状态签名，否则 25 秒后会被自己的操作误判成「数据有更新」
+      await loadBase({ force: true });
     } catch (e) {
       out.textContent += `\n失败：${e.message}`;
       toast(e.message, 'err');
@@ -389,7 +426,7 @@ views.overview = async () => {
         (r.initOutput ? `[init]\n${r.initOutput}\n\n` : '') +
         (s ? `[sync] exit=${s.code}\n${s.output || ''}${s.stderr ? '\n[stderr]\n' + s.stderr : ''}` : '');
       toast(`部署成功：${r.path}`, 'ok');
-      await loadBase();
+      await loadBase({ force: true });
       views.overview();
     } catch (e) {
       out.textContent = `失败：${e.message}`;
@@ -569,7 +606,7 @@ views.skills = async () => {
             body: { agent: s.agent, skillPath: s.path, enabled: !off },
           });
           toast(off ? `已禁用 ${s.name}（${r.mode === 'move' ? '已备份' : 'ok'}）` : `已启用 ${s.name}`, 'ok');
-          await loadBase();
+          await loadBase({ force: true });
           views.skills();
         } catch (e) {
           toast('操作失败: ' + e.message, 'err');
@@ -592,7 +629,7 @@ views.skills = async () => {
         try {
           const r = await api('/api/promote/skill', { method: 'POST', body: { source: s.path, agents: ['*'], removeFromProject: true } });
           toast(r.warning || `已提升到全局：${r.path}`, r.warning ? 'err' : 'ok');
-          await loadBase();
+          await loadBase({ force: true });
           views.skills();
         } catch (e) {
           toast('操作失败: ' + e.message, 'err');
@@ -721,7 +758,7 @@ views.skills = async () => {
       toast(`已写入 ${done} 个，失败 ${errs.length} 个`, 'err');
     }
     selection.clear();
-    await loadBase();
+    await loadBase({ force: true });
     views.skills();
     if (done) await afterDeploy(done, ' skill');
   };
@@ -759,7 +796,7 @@ views.skills = async () => {
     toast(`${enable ? '启用' : '禁用'} ${done}/${items.length}${errs.length ? `，失败 ${errs.length}` : ''}`, errs.length ? 'err' : 'ok');
     if (errs.length) console.warn('批量开关失败：', errs);
     selection.clear();
-    await loadBase();
+    await loadBase({ force: true });
     views.skills();
   };
   $('#sk-bulk-deploy').onclick = bulkDeploy;
@@ -885,7 +922,7 @@ views.mcps = async () => {
             body: { agent: m.agent, name: m.name, scope: m.scope, file: m.file, enabled: enable },
           });
           toast(enable ? `已启用 ${m.name}（${r.mode}）` : `已禁用 ${m.name}（${r.mode}开关）`, 'ok');
-          await loadBase();
+          await loadBase({ force: true });
           views.mcps();
         } catch (e) {
           toast('操作失败: ' + e.message, 'err');
@@ -911,7 +948,7 @@ views.mcps = async () => {
           const inline = m.type === 'http' ? { type: 'http', url: m.url } : { command: m.command || '', args: m.args || [] };
           const r = await api('/api/promote/mcp', { method: 'POST', body: { name: m.name, agents: ['*'], inline, removeFromProject: true } });
           toast(r.warning || `已提升到全局：${r.path}`, r.warning ? 'err' : 'ok');
-          await loadBase();
+          await loadBase({ force: true });
           views.mcps();
         } catch (e) {
           toast('操作失败: ' + e.message, 'err');
@@ -1378,6 +1415,7 @@ views.config = async () => {
     try {
       const r = await api('/api/config', { method: 'POST', body: { text: $('#cfg-text').value } });
       toast(`已保存到 ${r.path}`, 'ok');
+      await noteStateBaseline(); // configMtime 变了：自己改的，不该再冒「数据有更新」
     } catch (e) {
       toast(e.message, 'err');
     }
@@ -1463,6 +1501,8 @@ views.sync = async () => {
       });
       out.textContent += `\nexit=${r?.code ?? '?'}`;
       toast(r?.ok ? '完成' : `退出码 ${r?.code}`, r?.ok ? 'ok' : 'err');
+      // 自己刚同步过：刷新缓存并重记状态签名，否则 25 秒后会被自己的操作误判成「数据有更新」
+      await loadBase({ force: true });
     } catch (e) {
       out.textContent += `\n失败：${e.message}`;
       toast(e.message, 'err');
@@ -1507,15 +1547,24 @@ views.sync = async () => {
 
 async function changeProject() {
   let dir = cache.meta?.projectDir || cache.meta?.home || '';
-  const select = async (path) => {
+  const select = async (target) => {
     try {
-      const res = await api('/api/project/select', { method: 'POST', body: { path } });
-      toast(`已切换到 ${res.projectDir}`, 'ok');
+      const res = await api('/api/project/select', { method: 'POST', body: { path: target } });
+      // 服务端此刻已切换：先把侧栏路径与视图骨架画出来，不等后面要 2~4 秒的 gaal 拉取
+      const dir = res.projectDir || target;
+      cache.meta = { ...(cache.meta || {}), projectDir: dir };
+      $('#project-path').textContent = dir;
+      $('#project-path').title = dir;
+      cache.audit = null;
+      cache.mcps = [];
+      cache.config = null;
+      cache.status = null;
       closeModal();
-      await loadBase();
-      show(currentView);
+      toast(`已切换到 ${dir} · 正在刷新数据…`, 'ok');
+      loadBase({ force: true }); // 立刻开始拉取新项目数据，不等渲染
+      await show(currentView); // show() 会画骨架并等待同一份加载（新鲜期内不重复请求）
     } catch (e) {
-      toast(e.message, 'err');
+      toast(e.message, 'err'); // 弹窗保持打开，可另选目录
     }
   };
   const render = async (p) => {
@@ -1536,14 +1585,16 @@ async function changeProject() {
        ${r.recent && r.recent.length ? `<div style="margin-bottom:10px"><span class="muted" style="font-size:11px">最近项目：</span>
          ${r.recent.map((d) => `<button class="small recent-btn" data-go="${esc(d)}" title="${esc(d)}">${esc(basename(d))}</button>`).join('')}
        </div>` : ''}
-       <div style="border:1px solid var(--border);border-radius:var(--radius);max-height:340px;overflow:auto">
+       <div class="muted" style="font-size:11px;margin-bottom:6px">单击目录 = 选为当前项目 ｜ 点 ➜ 进入下一级 ｜ 「✅ 选择当前目录」选中 📍 所在目录</div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius);max-height:340px;overflow:auto">
          ${r.parent ? `<div class="fs-row" data-go="${esc(r.parent)}" style="${rowStyle};color:var(--text-dim)">⬆️ .. (上级)</div>` : ''}
          <div class="fs-row" data-select="${esc(r.current)}" style="${rowStyle};color:var(--accent);font-weight:600">✅ 选择当前目录</div>
-         ${r.entries.map((e) => `<div class="fs-row" data-go="${esc(e.path)}" style="${rowStyle}">
+         ${r.entries.map((e) => `<div class="fs-row" data-select="${esc(e.path)}" style="${rowStyle}" title="单击选为当前项目">
             <span>${e.hasConfig ? '⭐' : '📁'}</span>
             <span style="flex:1">${esc(e.name)}</span>
             ${e.hasConfig ? '<span class="tag green" style="font-size:10px">gaal.yaml</span>' : ''}
             ${e.hidden ? '<span class="muted" style="font-size:10px">隐藏</span>' : ''}
+            <button class="small enter-btn" data-go="${esc(e.path)}" title="进入该目录">➜</button>
           </div>`).join('') || '<div class="empty" style="padding:12px">无子目录</div>'}
        </div>
        <label class="field" style="margin-top:12px"><span>或手动输入路径</span><input type="text" id="fs-input" value="${esc(r.current)}" placeholder="例如 D:\\work\\my-project" /></label>
@@ -1556,7 +1607,12 @@ async function changeProject() {
           el.onmouseenter = () => (el.style.background = 'var(--bg-elev)');
           el.onmouseleave = () => (el.style.background = '');
           if (el.dataset.go) el.onclick = () => render(el.dataset.go);
-          if (el.dataset.select) el.onclick = () => select(el.dataset.select);
+          // 行内 ➜ 只负责进入下一级，其余单击 = 直接选中该目录
+          if (el.dataset.select) el.onclick = (ev) => {
+            const enter = ev.target.closest('[data-go]');
+            if (enter) return render(enter.dataset.go);
+            select(el.dataset.select);
+          };
         });
         $$('.drive-btn, .recent-btn', root).forEach((el) => {
           el.onclick = () => render(el.dataset.go);
@@ -1605,7 +1661,7 @@ async function quickSync() {
   try {
     const r = await api('/api/sync', { method: 'POST', body: {} });
     toast(r.ok ? '✓ 同步完成' : `同步退出码 ${r.code}`, r.ok ? 'ok' : 'err');
-    await loadBase();
+    await loadBase({ force: true });
     show(currentView);
   } catch (e) {
     toast(`同步失败：${e.message}`, 'err');
@@ -1624,14 +1680,20 @@ window.addEventListener('hashchange', () => {
 });
 $('#btn-quick-sync').onclick = quickSync;
 $('#btn-refresh').onclick = async () => {
-  await loadBase();
+  await loadBase({ force: true });
   show(currentView);
 };
 $('#btn-change-project').onclick = changeProject;
 $('#stale-pill').onclick = async () => {
-  await loadBase();
-  show(currentView);
-  toast('已刷新到最新数据', 'ok');
+  // 先收起提示，否则要等 loadBase 那一两秒，看着像点了没反应
+  $('#stale-pill').classList.add('hidden');
+  try {
+    await loadBase({ force: true }); // 结束时 noteStateBaseline() 会重新记录签名基线
+    show(currentView);
+    toast('已刷新到最新数据', 'ok');
+  } catch (e) {
+    toast(`刷新失败：${e.message}，稍后可再试`, 'err');
+  }
 };
 
 const initialView = location.hash.slice(1);

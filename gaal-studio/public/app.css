@@ -133,6 +133,9 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   border: 1px solid var(--border); color: var(--text-dim); background: var(--bg-elev);
 }
 .badge.on { color: var(--accent); border-color: var(--accent); }
+
+/* 通用隐藏工具类：#stale-pill / .bulk-bar 各自声明了 display，必须 !important 才压得住 */
+.hidden { display: none !important; }
 .tag {
   display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
   background: var(--bg-elev); border: 1px solid var(--border); color: var(--text-dim);
