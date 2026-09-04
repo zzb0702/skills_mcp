@@ -80,8 +80,51 @@ function version() {
   });
 }
 
-function agents() {
-  return runGaalJson(['agents', '-o', 'json']);
+/**
+ * 简单 TTL 记忆器：给「机器级、且 spawn 子进程很贵」的 CLI 调用去重。
+ * 并发调用共享同一个 in-flight promise；loader 结果被判定为坏时不写缓存，
+ * 下一次调用会重新执行。传入 truthy 参数可强制绕过缓存。
+ *
+ * @param {(arg?: any) => Promise<any>} loader
+ * @param {number} ttlMs
+ * @param {{now?: () => number, bad?: (r: any) => boolean}} [opts]
+ */
+function ttlMemo(loader, ttlMs, opts = {}) {
+  const now = opts.now || (() => Date.now());
+  const bad = opts.bad || (() => false);
+  let entry = null; // { at, promise }
+  let runs = 0;
+  const memo = (force) => {
+    if (entry && force !== true && now() - entry.at < ttlMs) return entry.promise;
+    const p = (async () => {
+      runs += 1;
+      const r = await loader(undefined);
+      if (bad(r) && entry && entry.promise === p) entry = null;
+      return r;
+    })();
+    entry = { at: now(), promise: p };
+    return p;
+  };
+  memo.stats = () => ({ runs, cached: !!entry });
+  memo.reset = () => {
+    entry = null;
+  };
+  return memo;
+}
+
+/* gaal agents 只描述本机装了哪些 agent（安装/卸载才会变），面板一次刷新里
+ * /api/agents、/api/audit、/api/mcps 会各要一次 —— 缓存掉重复的子进程。
+ * 默认 20s；设 GAAL_STUDIO_AGENTS_TTL_MS=0 可关掉。 */
+const AGENTS_TTL_MS = Number.isFinite(Number(process.env.GAAL_STUDIO_AGENTS_TTL_MS))
+  ? Number(process.env.GAAL_STUDIO_AGENTS_TTL_MS)
+  : 20000;
+
+const agentsMemo = ttlMemo(() => runGaalJson(['agents', '-o', 'json']), AGENTS_TTL_MS, {
+  bad: (r) => !r || !r.data,
+});
+
+function agents(opts = {}) {
+  return agentsMemo(opts.force ? true : undefined);
 }
 
 function audit() {
@@ -170,8 +213,11 @@ module.exports = {
   GAAL_BIN,
   runGaal,
   runGaalJson,
+  ttlMemo,
   version,
   agents,
+  agentsCacheStats: agentsMemo.stats,
+  resetAgentsCache: agentsMemo.reset,
   audit,
   status,
   doctor,
